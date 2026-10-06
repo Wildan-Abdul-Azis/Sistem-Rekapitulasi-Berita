@@ -1,5 +1,11 @@
 <?php
 
+use Illuminate\Foundation\Application;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
+
+define('LARAVEL_START', microtime(true));
+
 // Serverless handler for Laravel on Vercel
 // Ensure writable directories exist in /tmp
 $storageDirs = [
@@ -48,14 +54,36 @@ $_ENV['APP_ROUTES_CACHE'] = '/tmp/bootstrap/cache/routes.php';
 $_SERVER['APP_ROUTES_CACHE'] = '/tmp/bootstrap/cache/routes.php';
 
 // Prepare SQLite database file in /tmp if sqlite is used
-$sqliteDb = '/tmp/database.sqlite';
-if (! file_exists($sqliteDb)) {
-    if (file_exists(__DIR__.'/../database/database.sqlite')) {
-        copy(__DIR__.'/../database/database.sqlite', $sqliteDb);
-    } else {
+$dbConnection = getenv('DB_CONNECTION') ?: ($_ENV['DB_CONNECTION'] ?? 'sqlite');
+$isNewSqlite = false;
+
+if ($dbConnection === 'sqlite') {
+    $sqliteDb = '/tmp/database.sqlite';
+    if (! file_exists($sqliteDb) || filesize($sqliteDb) === 0) {
         touch($sqliteDb);
+        $isNewSqlite = true;
+    }
+    putenv("DB_DATABASE={$sqliteDb}");
+    $_ENV['DB_DATABASE'] = $sqliteDb;
+    $_SERVER['DB_DATABASE'] = $sqliteDb;
+}
+
+// Register Composer autoloader
+require __DIR__.'/../vendor/autoload.php';
+
+// Bootstrap Laravel
+/** @var Application $app */
+$app = require __DIR__.'/../bootstrap/app.php';
+
+// Auto migrate and seed default admin user on fresh SQLite instance
+if ($isNewSqlite) {
+    try {
+        Artisan::call('migrate', ['--force' => true]);
+        Artisan::call('db:seed', ['--force' => true]);
+    } catch (Throwable $e) {
+        // Fallback gracefully
     }
 }
 
-// Forward request to standard Laravel public entrypoint
-require __DIR__.'/../public/index.php';
+// Handle HTTP request
+$app->handleRequest(Request::capture());
